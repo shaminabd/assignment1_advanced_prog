@@ -1,5 +1,7 @@
 # Order & Payment Microservices
 
+Repo: `https://github.com/shaminabd/assignment1_advanced_prog`
+
 Two microservices in Go: Order Service and Payment Service. Built with Clean Architecture, Gin framework, and PostgreSQL.
 
 ## Architecture Diagram
