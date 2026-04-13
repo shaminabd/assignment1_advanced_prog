@@ -6,7 +6,12 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
 	github.com/lib/pq v1.12.1
+	github.com/shaminabd/ap2-contracts-go v0.0.0-00010101000000-000000000000
+	google.golang.org/grpc v1.72.0
+	google.golang.org/protobuf v1.36.10
 )
+
+replace github.com/shaminabd/ap2-contracts-go => ../rpcgen
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
@@ -37,5 +42,5 @@ require (
 	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
 	golang.org/x/text v0.34.0 // indirect
-	google.golang.org/protobuf v1.36.10 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20250218202821-56aae31c358a // indirect
 )

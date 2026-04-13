@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package orderpayment.v1;
+
+option go_package = "github.com/shaminabd/ap2-contracts-go/apiv1;apiv1";
+
+import "google/protobuf/timestamp.proto";
+
+service PaymentService {
+  rpc ProcessPayment(PaymentRequest) returns (PaymentResponse);
+}
+
+message PaymentRequest {
+  string order_id = 1;
+  int64 amount = 2;
+}
+
+message PaymentResponse {
+  string id = 1;
+  string order_id = 2;
+  string transaction_id = 3;
+  int64 amount = 4;
+  string status = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+service OrderUpdateService {
+  rpc SubscribeToOrderUpdates(OrderRequest) returns (stream OrderStatusUpdate);
+}
+
+message OrderRequest {
+  string order_id = 1;
+}
+
+message OrderStatusUpdate {
+  string order_id = 1;
+  string status = 2;
+  google.protobuf.Timestamp updated_at = 3;
+}
