@@ -1,0 +1,38 @@
+name: Protobuf generated code
+
+on:
+  push:
+    paths:
+      - 'proto/**'
+      - 'scripts/generate-protobuf.sh'
+      - 'rpcgen/go.mod'
+  pull_request:
+    paths:
+      - 'proto/**'
+      - 'scripts/generate-protobuf.sh'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - name: Install Go plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+      - name: Regenerate
+        run: |
+          export PATH="${PATH}:$(go env GOPATH)/bin"
+          protoc \
+            --go_out=rpcgen --go_opt=module=github.com/shaminabd/ap2-contracts-go \
+            --go-grpc_out=rpcgen --go-grpc_opt=module=github.com/shaminabd/ap2-contracts-go \
+            -I proto -I /usr/local/include \
+            proto/orderpayment/v1/order_payment.proto
+      - name: Check drift
+        run: git diff --exit-code rpcgen/apiv1/
