@@ -32,6 +32,12 @@ type orderResponse struct {
 	CreatedAt  string `json:"created_at"`
 }
 
+type revenueResponse struct {
+	CustomerID  string `json:"customer_id"`
+	TotalAmount int64  `json:"total_amount"`
+	OrdersCount int    `json:"orders_count"`
+}
+
 func (h *OrderHandler) CreateOrder(ctx *gin.Context) {
 	var req createOrderRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -99,8 +105,28 @@ func (h *OrderHandler) CancelOrder(ctx *gin.Context) {
 	})
 }
 
+func (h *OrderHandler) GetRevenueByCustomerID(ctx *gin.Context) {
+	customerID := ctx.Query("customer_id")
+	if customerID == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "customer_id is required"})
+		return
+	}
+
+	total, count, err := h.useCase.GetRevenueByCustomerID(customerID)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+	}
+
+	ctx.JSON(http.StatusOK, revenueResponse{
+		CustomerID:  customerID,
+		TotalAmount: total,
+		OrdersCount: count,
+	})
+}
+
 func (h *OrderHandler) RegisterRoutes(router *gin.Engine) {
 	router.POST("/orders", h.CreateOrder)
+	router.GET("/orders/revenue", h.GetRevenueByCustomerID)
 	router.GET("/orders/:id", h.GetOrder)
 	router.PATCH("/orders/:id/cancel", h.CancelOrder)
 }

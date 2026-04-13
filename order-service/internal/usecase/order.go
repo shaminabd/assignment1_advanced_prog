@@ -14,6 +14,7 @@ type OrderRepository interface {
 	GetByID(id string) (*domain.Order, error)
 	UpdateStatus(id string, status string) error
 	GetByIdempotencyKey(key string) (*domain.Order, error)
+	GetRevenueByCustomerID(customerID string) (int64, int, error)
 }
 
 type PaymentClient interface {
@@ -30,6 +31,10 @@ func NewOrderUseCase(orderRepo OrderRepository, paymentClient PaymentClient) *Or
 		orderRepo:     orderRepo,
 		paymentClient: paymentClient,
 	}
+}
+
+func (uc *OrderUseCase) GetRevenueByCustomerID(customerID string) (int64, int, error) {
+	return uc.orderRepo.GetRevenueByCustomerID(customerID)
 }
 
 func (uc *OrderUseCase) CreateOrder(customerID string, itemName string, amount int64, idempotencyKey string) (*domain.Order, error) {
