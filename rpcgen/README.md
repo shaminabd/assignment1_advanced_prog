@@ -19,11 +19,11 @@ Regenerate after editing protos:
 
 ## GitHub Actions setup (Repository B)
 
-1. Push this folder to your generated-code repo.
+1. Push this folder to your generated-code repo: `https://github.com/shaminabd/ap2-contracts-go`.
 2. In repository settings, create secret `PAT_TOKEN`.
-3. Open `.github/workflows/generate.yml` and replace:
-   - `PROTO_REPO` with your Repository A slug (`your_user/your_proto_repo`)
-   - `PROTO_REF` with your proto branch (`main` or `master`)
-   - `GO_MODULE` with your generated repo module path
+3. Open `.github/workflows/generate.yml` and set:
+   - `PROTO_REPO`: `shaminabd/ap2-protos`
+   - `PROTO_REF`: `main`
+   - `GO_MODULE`: `github.com/shaminabd/ap2-contracts-go`
 4. Open the **Actions** tab and run workflow **Generate Go from Proto Repository**.
 5. Create a release tag manually (`v1.0.0`) in GitHub Releases.

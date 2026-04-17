@@ -8,15 +8,13 @@ Two microservices in Go: Order Service and Payment Service. Built with Clean Arc
 
 ### Proto repository (Repository A)
 
-Source `.proto` files live in this monorepo under [`proto/`](proto/). For submission, push that tree to a **dedicated** GitHub repo that contains only contracts.
-
-Suggested URL (replace with yours): `https://github.com/shaminabd/ap2-protos`
+Source `.proto` files live in this monorepo under [`proto/`](proto/). Contracts repository:
+`https://github.com/shaminabd/ap2-protos`
 
 ### Generated Go repository (Repository B)
 
-Generated `*.pb.go` / `*_grpc.pb.go` live in [`rpcgen/`](rpcgen/) as module `github.com/shaminabd/ap2-contracts-go`. For full marks, push `rpcgen` to its own repo, tag releases (e.g. `v1.0.0`), and point `go.mod` to `go get ...@v1.0.0` instead of `replace`.
-
-Suggested URL (replace with yours): `https://github.com/shaminabd/ap2-contracts-go`
+Generated `*.pb.go` / `*_grpc.pb.go` live in [`rpcgen/`](rpcgen/) as module `github.com/shaminabd/ap2-contracts-go`. Generated code repository:
+`https://github.com/shaminabd/ap2-contracts-go`
 
 Local monorepo builds use:
 
