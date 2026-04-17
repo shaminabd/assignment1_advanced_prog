@@ -1,0 +1,72 @@
+name: Generate Go from Proto Repository
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PROTO_REPO: shaminabd/ap2-protos
+  PROTO_REF: main
+  PROTO_FILE: orderpayment/v1/order_payment.proto
+  GO_MODULE: github.com/shaminabd/ap2-contracts-go
+  OUTPUT_DIR: apiv1
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout generator repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Clone Proto Files Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PROTO_REPO }}
+          ref: ${{ env.PROTO_REF }}
+          token: ${{ secrets.PAT_TOKEN }}
+          path: proto-src
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Set up protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Install protoc plugins
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: Generate Go Code from Proto Files
+        run: |
+          export PATH="${PATH}:$(go env GOPATH)/bin"
+          mkdir -p "${OUTPUT_DIR}"
+          protoc \
+            --go_out=. --go_opt=module="${GO_MODULE}" \
+            --go-grpc_out=. --go-grpc_opt=module="${GO_MODULE}" \
+            -I proto-src -I /usr/local/include \
+            "proto-src/${PROTO_FILE}"
+
+      - name: Commit and push generated files
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          rm -rf proto-src
+          git add "${OUTPUT_DIR}"
+          if git diff --staged --quiet; then
+            echo "No generated changes found"
+            exit 0
+          fi
+          git commit -m "chore: regenerate protobuf"
+          git pull --rebase origin "${{ github.ref_name }}"
+          git push origin HEAD:"${{ github.ref_name }}"
