@@ -2,6 +2,7 @@ package repository
 
 import (
 	"database/sql"
+	"strconv"
 
 	"payment-service/internal/domain"
 )
@@ -35,4 +36,43 @@ func (r *PostgresPaymentRepository) GetByOrderID(orderID string) (*domain.Paymen
 	}
 
 	return &payment, nil
+}
+
+func (r *PostgresPaymentRepository) FindByAmountRange(minAmount, maxAmount int64) ([]domain.Payment, error) {
+	query := "SELECT id, order_id, transaction_id, amount, status FROM payments WHERE 1=1"
+	args := make([]interface{}, 0, 2)
+	argIndex := 1
+
+	if minAmount > 0 {
+		query += " AND amount >= $" + strconv.Itoa(argIndex)
+		args = append(args, minAmount)
+		argIndex++
+	}
+
+	if maxAmount > 0 {
+		query += " AND amount <= $" + strconv.Itoa(argIndex)
+		args = append(args, maxAmount)
+	}
+
+	rows, err := r.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	payments := make([]domain.Payment, 0)
+	for rows.Next() {
+		var payment domain.Payment
+		err = rows.Scan(&payment.ID, &payment.OrderID, &payment.TransactionID, &payment.Amount, &payment.Status)
+		if err != nil {
+			return nil, err
+		}
+		payments = append(payments, payment)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return payments, nil
 }

@@ -11,6 +11,7 @@ import (
 type PaymentRepository interface {
 	Save(payment domain.Payment) error
 	GetByOrderID(orderID string) (*domain.Payment, error)
+	FindByAmountRange(minAmount, maxAmount int64) ([]domain.Payment, error)
 }
 
 type PaymentUseCase struct {
@@ -48,4 +49,16 @@ func (uc *PaymentUseCase) AuthorizePayment(orderID string, amount int64) (*domai
 
 func (uc *PaymentUseCase) GetPaymentByOrderID(orderID string) (*domain.Payment, error) {
 	return uc.repo.GetByOrderID(orderID)
+}
+
+func (uc *PaymentUseCase) ListPayments(minAmount, maxAmount int64) ([]domain.Payment, error) {
+	if minAmount < 0 || maxAmount < 0 {
+		return nil, errors.New("amount must not be negative")
+	}
+
+	if minAmount > 0 && maxAmount > 0 && minAmount > maxAmount {
+		return nil, errors.New("min_amount must be less than or equal to max_amount")
+	}
+
+	return uc.repo.FindByAmountRange(minAmount, maxAmount)
 }

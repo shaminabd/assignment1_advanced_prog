@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -27,6 +28,10 @@ type paymentResponse struct {
 	TransactionID string `json:"transaction_id"`
 	Amount        int64  `json:"amount"`
 	Status        string `json:"status"`
+}
+
+type listPaymentsResponse struct {
+	Payments []paymentResponse `json:"payments"`
 }
 
 func (h *PaymentHandler) CreatePayment(ctx *gin.Context) {
@@ -69,7 +74,48 @@ func (h *PaymentHandler) GetPayment(ctx *gin.Context) {
 	})
 }
 
+func (h *PaymentHandler) ListPayments(ctx *gin.Context) {
+	minAmount, err := parseAmountQuery(ctx.Query("min_amount"))
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid min_amount"})
+		return
+	}
+
+	maxAmount, err := parseAmountQuery(ctx.Query("max_amount"))
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "invalid max_amount"})
+		return
+	}
+
+	payments, err := h.useCase.ListPayments(minAmount, maxAmount)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	response := make([]paymentResponse, 0, len(payments))
+	for _, payment := range payments {
+		response = append(response, paymentResponse{
+			ID:            payment.ID,
+			OrderID:       payment.OrderID,
+			TransactionID: payment.TransactionID,
+			Amount:        payment.Amount,
+			Status:        payment.Status,
+		})
+	}
+
+	ctx.JSON(http.StatusOK, listPaymentsResponse{Payments: response})
+}
+
+func parseAmountQuery(value string) (int64, error) {
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.ParseInt(value, 10, 64)
+}
+
 func (h *PaymentHandler) RegisterRoutes(router *gin.Engine) {
 	router.POST("/payments", h.CreatePayment)
+	router.GET("/payments", h.ListPayments)
 	router.GET("/payments/:order_id", h.GetPayment)
 }
