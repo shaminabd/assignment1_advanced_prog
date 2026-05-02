@@ -1,0 +1,19 @@
+%% Mermaid source for Assignment 3 — paste into https://mermaid.live or a Markdown Mermaid block
+flowchart LR
+  Client[REST Client]
+  O[Order Service]
+  P[Payment Service]
+  RMQ[(RabbitMQ\npayment.events →\nqueue payment.completed)]
+  N[Notification\nConsumer]
+  PO[(order_db)]
+  PP[(payment_db)]
+  PN[(notification_db\nprocessed_events)]
+
+  Client -->|POST /orders| O
+  O -->|gRPC ProcessPayment| P
+  O --> PO
+  P --> PP
+  P -->|JSON event after DB commit| RMQ
+  RMQ -->|at-least-once, manual ack| N
+  N --> PN
+  N -->|stdout log| L[[Console log\nemail / order / amount]]
