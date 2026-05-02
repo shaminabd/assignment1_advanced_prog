@@ -3,7 +3,8 @@ flowchart LR
   Client[REST Client]
   O[Order Service]
   P[Payment Service]
-  RMQ[(RabbitMQ\npayment.events →\nqueue payment.completed)]
+  RMQ[(RabbitMQ\npayment.events →\npayment.completed)]
+  DLX[payment.dlx →\npayment.completed.dlq]
   N[Notification\nConsumer]
   PO[(order_db)]
   PP[(payment_db)]
@@ -14,6 +15,8 @@ flowchart LR
   O --> PO
   P --> PP
   P -->|JSON event after DB commit| RMQ
-  RMQ -->|at-least-once, manual ack| N
+  RMQ -->|manual ack| N
   N --> PN
   N -->|stdout log| L[[Console log\nemail / order / amount]]
+  N -->|nack requeue=false\nafter poison retries| DLX
+  DLX -->|DLQ monitor logs| L2[[DLQ log\nbonus demo]]
