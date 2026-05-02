@@ -41,6 +41,10 @@ Environment highlights:
 
 **Fresh DB volume:** if Postgres data already exists without the new databases, run `docker compose down -v` once before `up` so `docker-init.sh` runs again.
 
+**Postgres host port:** the compose file maps Postgres to **`localhost:5433`** → container `5432`, so it does not conflict with a **local PostgreSQL** often bound to **`5432`**. Services inside Docker still use `postgres:5432`. To connect from your shell with `psql`, use port **5433**.
+
+If you prefer port 5432 on the host instead, stop the other Postgres (`brew services stop postgresql@…`, quit Postgres.app, etc.) and change the mapping in [`docker-compose.yml`](docker-compose.yml) back to `"5432:5432"`.
+
 ### Demo API (with email for notifications)
 
 ```bash
