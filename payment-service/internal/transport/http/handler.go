@@ -36,7 +36,7 @@ func (h *PaymentHandler) CreatePayment(ctx *gin.Context) {
 		return
 	}
 
-	payment, err := h.useCase.AuthorizePayment(req.OrderID, req.Amount, "")
+	payment, err := h.useCase.AuthorizePayment(ctx.Request.Context(), req.OrderID, req.Amount, "")
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

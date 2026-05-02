@@ -28,7 +28,7 @@ func (s *PaymentServer) ProcessPayment(ctx context.Context, req *apiv1.PaymentRe
 		return nil, status.Error(codes.InvalidArgument, "amount must be positive")
 	}
 
-	payment, err := s.uc.AuthorizePayment(req.GetOrderId(), req.GetAmount(), req.GetCustomerEmail())
+	payment, err := s.uc.AuthorizePayment(ctx, req.GetOrderId(), req.GetAmount(), req.GetCustomerEmail())
 	if err != nil {
 		if err.Error() == "invalid amount" {
 			return nil, status.Error(codes.InvalidArgument, err.Error())

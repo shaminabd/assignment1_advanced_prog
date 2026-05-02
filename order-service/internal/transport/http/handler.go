@@ -48,7 +48,7 @@ func (h *OrderHandler) CreateOrder(ctx *gin.Context) {
 
 	idempotencyKey := ctx.GetHeader("Idempotency-Key")
 
-	order, err := h.useCase.CreateOrder(req.CustomerID, req.ItemName, req.Amount, req.CustomerEmail, idempotencyKey)
+	order, err := h.useCase.CreateOrder(ctx.Request.Context(), req.CustomerID, req.ItemName, req.Amount, req.CustomerEmail, idempotencyKey)
 	if err != nil {
 		if strings.Contains(err.Error(), "not available") {
 			ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})

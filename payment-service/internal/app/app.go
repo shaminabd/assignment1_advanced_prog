@@ -11,6 +11,8 @@ import (
 	_ "github.com/lib/pq"
 	googlegrpc "google.golang.org/grpc"
 
+	"payment-service/internal/infrastructure/rabbitmq"
+	"payment-service/internal/messaging"
 	"payment-service/internal/repository"
 	handler "payment-service/internal/transport/http"
 	paymentgrpc "payment-service/internal/transport/grpc"
@@ -34,7 +36,18 @@ func Run() {
 	}
 
 	paymentRepo := repository.NewPostgresPaymentRepository(db)
-	paymentUseCase := usecase.NewPaymentUseCase(paymentRepo)
+
+	var pub messaging.PaymentCompletedPublisher
+	if rabbitURL := os.Getenv("RABBITMQ_URL"); rabbitURL != "" {
+		p, err := rabbitmq.NewPublisher(rabbitURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pub = p
+		defer func() { _ = p.Close() }()
+	}
+
+	paymentUseCase := usecase.NewPaymentUseCase(paymentRepo, pub)
 	paymentHandler := handler.NewPaymentHandler(paymentUseCase)
 
 	router := gin.Default()
