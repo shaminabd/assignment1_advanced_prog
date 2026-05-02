@@ -18,7 +18,7 @@ type OrderRepository interface {
 }
 
 type PaymentClient interface {
-	AuthorizePayment(orderID string, amount int64) (string, string, error)
+	AuthorizePayment(orderID string, amount int64, customerEmail string) (string, string, error)
 }
 
 type OrderUseCase struct {
@@ -37,7 +37,7 @@ func (uc *OrderUseCase) GetRevenueByCustomerID(customerID string) (int64, int, e
 	return uc.orderRepo.GetRevenueByCustomerID(customerID)
 }
 
-func (uc *OrderUseCase) CreateOrder(customerID string, itemName string, amount int64, idempotencyKey string) (*domain.Order, error) {
+func (uc *OrderUseCase) CreateOrder(customerID string, itemName string, amount int64, customerEmail string, idempotencyKey string) (*domain.Order, error) {
 	if amount <= 0 {
 		return nil, errors.New("invalid amount")
 	}
@@ -64,7 +64,7 @@ func (uc *OrderUseCase) CreateOrder(customerID string, itemName string, amount i
 		return nil, err
 	}
 
-	status, _, err := uc.paymentClient.AuthorizePayment(order.ID, order.Amount)
+	status, _, err := uc.paymentClient.AuthorizePayment(order.ID, order.Amount, customerEmail)
 	if err != nil {
 		uc.orderRepo.UpdateStatus(order.ID, "Failed")
 		order.Status = "Failed"

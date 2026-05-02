@@ -42,13 +42,14 @@ func (c *GRPCPaymentClient) Close() error {
 	return c.conn.Close()
 }
 
-func (c *GRPCPaymentClient) AuthorizePayment(orderID string, amount int64) (string, string, error) {
+func (c *GRPCPaymentClient) AuthorizePayment(orderID string, amount int64, customerEmail string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	resp, err := c.client.ProcessPayment(ctx, &apiv1.PaymentRequest{
-		OrderId: orderID,
-		Amount:  amount,
+		OrderId:        orderID,
+		Amount:         amount,
+		CustomerEmail:  customerEmail,
 	})
 	if err != nil {
 		st, ok := status.FromError(err)
