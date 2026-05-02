@@ -3,8 +3,11 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	_ "github.com/lib/pq"
 
@@ -13,6 +16,9 @@ import (
 )
 
 func Run() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://postgres:postgres@localhost:5432/notification_db?sslmode=disable"
@@ -51,8 +57,9 @@ CREATE TABLE IF NOT EXISTS processed_events (
 
 	log.Println("notification-service consuming queue payment.completed (manual ack, durable queue)")
 
-	ctx := context.Background()
-	if err := cons.Run(ctx); err != nil && err != context.Canceled {
+	if err := cons.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatal(err)
 	}
+
+	log.Println("notification-service stopped")
 }

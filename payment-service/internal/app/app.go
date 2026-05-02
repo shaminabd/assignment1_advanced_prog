@@ -1,10 +1,16 @@
 package app
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	apiv1 "github.com/shaminabd/ap2-contracts-go/apiv1"
 	"github.com/gin-gonic/gin"
@@ -20,6 +26,9 @@ import (
 )
 
 func Run() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://postgres:postgres@localhost:5432/payment_db?sslmode=disable"
@@ -29,6 +38,7 @@ func Run() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer db.Close()
 
 	err = db.Ping()
 	if err != nil {
@@ -44,7 +54,6 @@ func Run() {
 			log.Fatal(err)
 		}
 		pub = p
-		defer func() { _ = p.Close() }()
 	}
 
 	paymentUseCase := usecase.NewPaymentUseCase(paymentRepo, pub)
@@ -76,10 +85,35 @@ func Run() {
 	go func() {
 		log.Printf("payment gRPC listening on %s", grpcListen)
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("gRPC server: %v", err)
+			log.Printf("gRPC server: %v", err)
 		}
 	}()
 
-	log.Printf("payment HTTP listening on :%s", httpPort)
-	log.Fatal(router.Run(":" + httpPort))
+	httpSrv := &http.Server{
+		Addr:    ":" + httpPort,
+		Handler: router,
+	}
+	go func() {
+		log.Printf("payment HTTP listening on :%s", httpPort)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("payment-service shutting down")
+
+	grpcServer.GracefulStop()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+
+	if pub != nil {
+		if err := pub.Close(); err != nil {
+			log.Printf("rabbitmq close: %v", err)
+		}
+	}
 }
