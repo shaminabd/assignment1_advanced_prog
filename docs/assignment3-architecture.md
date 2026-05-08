@@ -1,4 +1,6 @@
-%% Mermaid source for Assignment 3 — paste into https://mermaid.live or a Markdown Mermaid block
+# Assignment 3 Architecture
+
+```mermaid
 flowchart LR
   Client[REST Client]
   O[Order Service]
@@ -20,3 +22,4 @@ flowchart LR
   N -->|stdout log| L[[Console log\nemail / order / amount]]
   N -->|nack requeue=false\nafter demo retries| DLX
   DLX -->|DLQ monitor logs| L2[[DLQ log\nbonus demo]]
+```

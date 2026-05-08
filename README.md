@@ -8,7 +8,7 @@ Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignm
 
 ### Architecture diagram (template)
 
-- Editable Mermaid source: [`docs/assignment3-architecture.mmd`](docs/assignment3-architecture.mmd) — open in [Mermaid Live Editor](https://mermaid.live) and export **PNG/SVG** for the submission PDF/report.
+- Editable Mermaid source: [`docs/assignment3-architecture.md`](docs/assignment3-architecture.md) — open in [Mermaid Live Editor](https://mermaid.live) and export **PNG/SVG** for the submission PDF/report.
 
 ### Reliability and ACKs
 

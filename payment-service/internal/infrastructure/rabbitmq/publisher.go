@@ -26,13 +26,14 @@ type Publisher struct {
 	channel *amqp.Channel
 }
 
-func closeConnAndChannel(conn *amqp.Connection, ch *amqp.Channel) {
+func closeAndWrap(conn *amqp.Connection, ch *amqp.Channel, format string, err error) error {
 	if ch != nil {
 		_ = ch.Close()
 	}
 	if conn != nil {
 		_ = conn.Close()
 	}
+	return fmt.Errorf(format, err)
 }
 
 func NewPublisher(amqpURL string) (*Publisher, error) {
@@ -43,8 +44,7 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 
 	ch, err := conn.Channel()
 	if err != nil {
-		closeConnAndChannel(conn, nil)
-		return nil, fmt.Errorf("rabbitmq channel: %w", err)
+		return nil, closeAndWrap(conn, nil, "rabbitmq channel: %w", err)
 	}
 
 	if err := ch.ExchangeDeclare(
@@ -56,8 +56,7 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		nil,
 	); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("exchange declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "exchange declare: %w", err)
 	}
 
 	if err := ch.ExchangeDeclare(
@@ -69,8 +68,7 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		nil,
 	); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("dlx exchange declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "dlx exchange declare: %w", err)
 	}
 
 	if _, err := ch.QueueDeclare(
@@ -81,13 +79,11 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		nil,
 	); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("dlq queue declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "dlq queue declare: %w", err)
 	}
 
 	if err := ch.QueueBind(dlqQueueName, dlqRoutingKey, dlxExchangeName, false, nil); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("dlq bind: %w", err)
+		return nil, closeAndWrap(conn, ch, "dlq bind: %w", err)
 	}
 
 	mainQueueArgs := amqp.Table{
@@ -103,18 +99,15 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		mainQueueArgs,
 	); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("queue declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "queue declare: %w", err)
 	}
 
 	if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("queue bind: %w", err)
+		return nil, closeAndWrap(conn, ch, "queue bind: %w", err)
 	}
 
 	if err := ch.Confirm(false); err != nil {
-		closeConnAndChannel(conn, ch)
-		return nil, fmt.Errorf("confirm mode: %w", err)
+		return nil, closeAndWrap(conn, ch, "confirm mode: %w", err)
 	}
 
 	return &Publisher{conn: conn, channel: ch}, nil

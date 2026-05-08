@@ -25,11 +25,21 @@ const (
 )
 
 type Consumer struct {
-	conn           *amqp.Connection
-	ch             *amqp.Channel
-	repo           *repository.ProcessedRepository
+	conn            *amqp.Connection
+	ch              *amqp.Channel
+	repo            *repository.ProcessedRepository
 	dlqDemoMu       sync.Mutex
 	dlqDemoAttempts map[string]int
+}
+
+func closeAndWrap(conn *amqp.Connection, ch *amqp.Channel, format string, err error) error {
+	if ch != nil {
+		_ = ch.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+	return fmt.Errorf(format, err)
 }
 
 func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consumer, error) {
@@ -40,14 +50,11 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 
 	ch, err := conn.Channel()
 	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("rabbitmq channel: %w", err)
+		return nil, closeAndWrap(conn, nil, "rabbitmq channel: %w", err)
 	}
 
 	if err := ch.Qos(1, 0, false); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("qos: %w", err)
+		return nil, closeAndWrap(conn, ch, "qos: %w", err)
 	}
 
 	if err := ch.ExchangeDeclare(
@@ -59,9 +66,7 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 		false,
 		nil,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("exchange declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "exchange declare: %w", err)
 	}
 
 	if err := ch.ExchangeDeclare(
@@ -73,9 +78,7 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 		false,
 		nil,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("dlx exchange declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "dlx exchange declare: %w", err)
 	}
 
 	if _, err := ch.QueueDeclare(
@@ -86,15 +89,11 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 		false,
 		nil,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("dlq queue declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "dlq queue declare: %w", err)
 	}
 
 	if err := ch.QueueBind(dlqQueueName, dlqRoutingKey, dlxExchangeName, false, nil); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("dlq bind: %w", err)
+		return nil, closeAndWrap(conn, ch, "dlq bind: %w", err)
 	}
 
 	mainQueueArgs := amqp.Table{
@@ -110,21 +109,17 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 		false,
 		mainQueueArgs,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("queue declare: %w", err)
+		return nil, closeAndWrap(conn, ch, "queue declare: %w", err)
 	}
 
 	if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
-		return nil, fmt.Errorf("queue bind: %w", err)
+		return nil, closeAndWrap(conn, ch, "queue bind: %w", err)
 	}
 
 	return &Consumer{
-		conn:           conn,
-		ch:             ch,
-		repo:           repo,
+		conn:            conn,
+		ch:              ch,
+		repo:            repo,
 		dlqDemoAttempts: make(map[string]int),
 	}, nil
 }
@@ -183,8 +178,13 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
-	eventID := strings.TrimSpace(ev.EventID)
-	if _, err := uuid.Parse(eventID); err != nil {
+	if strings.TrimSpace(ev.EventID) == "" {
+		log.Printf("notification: missing event_id (drop)")
+		_ = d.Ack(false)
+		return
+	}
+
+	if _, err := uuid.Parse(ev.EventID); err != nil {
 		log.Printf("notification: invalid event_id (drop): %v", err)
 		_ = d.Ack(false)
 		return
@@ -195,14 +195,13 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
-	claimed, err := c.repo.TryClaim(ctx, eventID)
+	alreadyProcessed, err := c.repo.IsAlreadyProcessed(ctx, ev.EventID)
 	if err != nil {
 		log.Printf("notification: idempotency store: %v", err)
 		_ = d.Nack(false, true)
 		return
 	}
 
-	alreadyProcessed := !claimed
 	if alreadyProcessed {
 		_ = d.Ack(false)
 		return

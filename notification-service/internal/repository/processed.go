@@ -13,7 +13,7 @@ func NewProcessedRepository(db *sql.DB) *ProcessedRepository {
 	return &ProcessedRepository{db: db}
 }
 
-func (r *ProcessedRepository) TryClaim(ctx context.Context, eventID string) (claimed bool, err error) {
+func (r *ProcessedRepository) IsAlreadyProcessed(ctx context.Context, eventID string) (bool, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO processed_events (event_id) VALUES ($1::uuid) ON CONFLICT (event_id) DO NOTHING`,
 		eventID,
@@ -25,5 +25,5 @@ func (r *ProcessedRepository) TryClaim(ctx context.Context, eventID string) (cla
 	if err != nil {
 		return false, err
 	}
-	return n > 0, nil
+	return n == 0, nil
 }
