@@ -72,13 +72,13 @@ Expected line format:
 - Exchange: `payment.events` (direct, durable)
 - Queue: `payment.completed` (durable), bound with routing key `payment.completed`
 - Dead-letter exchange: `payment.dlx` (direct, durable); dead-letter queue: `payment.completed.dlq` bound with routing key `payment.completed.dlq`
-- Main queue declares **`x-dead-letter-exchange`** / **`x-dead-letter-routing-key`** so that **`basic.nack` / `reject` with `requeue=false`** routes the message to the DLQ (after retries in the poison demo).
+- Main queue declares **`x-dead-letter-exchange`** / **`x-dead-letter-routing-key`** so that **`basic.nack` / `reject` with `requeue=false`** routes the message to the DLQ (after retries in the dlq demo).
 - JSON payload fields: `event_id`, `order_id`, `amount` (cents), `customer_email`, `status`
 
 ### Bonus (+10%): Dead Letter Queue (DLQ) demo
 
-- **Topology:** Payment publisher and Notification consumer both declare the same DLX/DLQ bindings so failed poison messages are routed to **`payment.completed.dlq`**.
-- **Poison trigger:** set `"customer_email":"poison@dlq.demo"` on `POST /orders` (amount must stay ≤ **100000** cents so the payment is **Authorized** and an event is published).
+- **Topology:** Payment publisher and Notification consumer both declare the same DLX/DLQ bindings so failed demo messages are routed to **`payment.completed.dlq`**.
+- **DLQ trigger:** set `"customer_email":"dlq-demo@example.com"` on `POST /orders` (amount must stay ≤ **100000** cents so the payment is **Authorized** and an event is published).
 - **Retries:** the consumer simulates a hard failure for that email. Deliveries **1–2** use **`Nack(requeue=true)`** (retry). On delivery **3**, it **`Nack(requeue=false)`**, RabbitMQ dead-letters the message to **`payment.completed.dlq`**.
 - **Observation:** the service runs a second consumer on the DLQ only to log lines prefixed **`[DLQ]`** so you can demonstrate the move in `docker compose logs`.
 - **Important:** if RabbitMQ already had an older `payment.completed` queue **without** DLX arguments, declaration fails (`PRECONDITION_FAILED`). Reset broker state with **`docker compose down -v`** (or delete the old queue in the management UI at http://localhost:15672) before `up --build`.
@@ -86,7 +86,7 @@ Expected line format:
 ```bash
 curl -X POST http://localhost:8083/orders \
   -H "Content-Type: application/json" \
-  -d '{"customer_id":"dlq-demo","item_name":"Poison","amount":5000,"customer_email":"poison@dlq.demo"}'
+  -d '{"customer_id":"dlq-demo","item_name":"DLQ Demo","amount":5000,"customer_email":"dlq-demo@example.com"}'
 ```
 
 Then watch logs:
@@ -95,7 +95,7 @@ Then watch logs:
 docker compose logs -f notification-service
 ```
 
-You should see three `poison demo — simulated failure` lines (attempts 1–3), then **`poison demo — max retries reached, rejecting to DLQ`**, then **`[DLQ] message moved to dead-letter queue …`**.
+You should see three `dlq demo — simulated failure` lines (attempts 1–3), then **`dlq demo — max retries reached, rejecting to DLQ`**, then **`[DLQ] message moved to dead-letter queue …`**.
 
 ## Assignment 2 — Contract-first gRPC
 

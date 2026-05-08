@@ -1,3 +1,3 @@
 package event
 
-const PoisonDemoEmail = "poison@dlq.demo"
+const DLQDemoEmail = "dlq-demo@example.com"

@@ -28,8 +28,8 @@ type Consumer struct {
 	conn           *amqp.Connection
 	ch             *amqp.Channel
 	repo           *repository.ProcessedRepository
-	poisonMu       sync.Mutex
-	poisonAttempts map[string]int
+	dlqDemoMu       sync.Mutex
+	dlqDemoAttempts map[string]int
 }
 
 func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consumer, error) {
@@ -125,7 +125,7 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 		conn:           conn,
 		ch:             ch,
 		repo:           repo,
-		poisonAttempts: make(map[string]int),
+		dlqDemoAttempts: make(map[string]int),
 	}, nil
 }
 
@@ -195,8 +195,8 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
-	if strings.EqualFold(strings.TrimSpace(ev.CustomerEmail), event.PoisonDemoEmail) {
-		c.handlePoisonDemo(d, ev)
+	if strings.EqualFold(strings.TrimSpace(ev.CustomerEmail), event.DLQDemoEmail) {
+		c.handleDLQDemo(d, ev)
 		return
 	}
 
@@ -220,13 +220,13 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 	}
 }
 
-func (c *Consumer) handlePoisonDemo(d amqp.Delivery, ev event.PaymentCompleted) {
-	c.poisonMu.Lock()
-	c.poisonAttempts[ev.EventID]++
-	n := c.poisonAttempts[ev.EventID]
-	c.poisonMu.Unlock()
+func (c *Consumer) handleDLQDemo(d amqp.Delivery, ev event.PaymentCompleted) {
+	c.dlqDemoMu.Lock()
+	c.dlqDemoAttempts[ev.EventID]++
+	n := c.dlqDemoAttempts[ev.EventID]
+	c.dlqDemoMu.Unlock()
 
-	log.Printf("notification: poison demo — simulated failure (attempt %d/3) event_id=%s", n, ev.EventID)
+	log.Printf("notification: dlq demo — simulated failure (attempt %d/3) event_id=%s", n, ev.EventID)
 
 	if n < 3 {
 		if err := d.Nack(false, true); err != nil {
@@ -235,14 +235,14 @@ func (c *Consumer) handlePoisonDemo(d amqp.Delivery, ev event.PaymentCompleted) 
 		return
 	}
 
-	log.Printf("notification: poison demo — max retries reached, rejecting to DLQ (event_id=%s)", ev.EventID)
+	log.Printf("notification: dlq demo — max retries reached, rejecting to DLQ (event_id=%s)", ev.EventID)
 	if err := d.Nack(false, false); err != nil {
 		log.Printf("notification: nack dlq: %v", err)
 	}
 
-	c.poisonMu.Lock()
-	delete(c.poisonAttempts, ev.EventID)
-	c.poisonMu.Unlock()
+	c.dlqDemoMu.Lock()
+	delete(c.dlqDemoAttempts, ev.EventID)
+	c.dlqDemoMu.Unlock()
 }
 
 func (c *Consumer) Close() error {

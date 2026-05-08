@@ -18,5 +18,5 @@ flowchart LR
   RMQ -->|manual ack| N
   N --> PN
   N -->|stdout log| L[[Console log\nemail / order / amount]]
-  N -->|nack requeue=false\nafter poison retries| DLX
+  N -->|nack requeue=false\nafter demo retries| DLX
   DLX -->|DLQ monitor logs| L2[[DLQ log\nbonus demo]]
