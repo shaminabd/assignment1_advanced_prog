@@ -26,6 +26,15 @@ type Publisher struct {
 	channel *amqp.Channel
 }
 
+func closeConnAndChannel(conn *amqp.Connection, ch *amqp.Channel) {
+	if ch != nil {
+		_ = ch.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
 func NewPublisher(amqpURL string) (*Publisher, error) {
 	conn, err := amqp.Dial(amqpURL)
 	if err != nil {
@@ -34,7 +43,7 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 
 	ch, err := conn.Channel()
 	if err != nil {
-		_ = conn.Close()
+		closeConnAndChannel(conn, nil)
 		return nil, fmt.Errorf("rabbitmq channel: %w", err)
 	}
 
@@ -47,8 +56,7 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		nil,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("exchange declare: %w", err)
 	}
 
@@ -61,8 +69,7 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		nil,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("dlx exchange declare: %w", err)
 	}
 
@@ -74,14 +81,12 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		nil,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("dlq queue declare: %w", err)
 	}
 
 	if err := ch.QueueBind(dlqQueueName, dlqRoutingKey, dlxExchangeName, false, nil); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("dlq bind: %w", err)
 	}
 
@@ -98,20 +103,17 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		false,
 		mainQueueArgs,
 	); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("queue declare: %w", err)
 	}
 
 	if err := ch.QueueBind(queueName, routingKey, exchangeName, false, nil); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("queue bind: %w", err)
 	}
 
 	if err := ch.Confirm(false); err != nil {
-		_ = ch.Close()
-		_ = conn.Close()
+		closeConnAndChannel(conn, ch)
 		return nil, fmt.Errorf("confirm mode: %w", err)
 	}
 

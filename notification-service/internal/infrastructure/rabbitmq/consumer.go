@@ -183,13 +183,8 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
-	if strings.TrimSpace(ev.EventID) == "" {
-		log.Printf("notification: missing event_id (drop)")
-		_ = d.Ack(false)
-		return
-	}
-
-	if _, err := uuid.Parse(ev.EventID); err != nil {
+	eventID := strings.TrimSpace(ev.EventID)
+	if _, err := uuid.Parse(eventID); err != nil {
 		log.Printf("notification: invalid event_id (drop): %v", err)
 		_ = d.Ack(false)
 		return
@@ -200,14 +195,15 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		return
 	}
 
-	claimed, err := c.repo.TryClaim(ctx, ev.EventID)
+	claimed, err := c.repo.TryClaim(ctx, eventID)
 	if err != nil {
 		log.Printf("notification: idempotency store: %v", err)
 		_ = d.Nack(false, true)
 		return
 	}
 
-	if !claimed {
+	alreadyProcessed := !claimed
+	if alreadyProcessed {
 		_ = d.Ack(false)
 		return
 	}
