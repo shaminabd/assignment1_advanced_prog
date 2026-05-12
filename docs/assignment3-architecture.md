@@ -1,25 +1,38 @@
 # Assignment 3 Architecture
 
-```mermaid
-flowchart LR
-  Client[REST Client]
-  O[Order Service]
-  P[Payment Service]
-  RMQ[(RabbitMQ\npayment.events →\npayment.completed)]
-  DLX[payment.dlx →\npayment.completed.dlq]
-  N[Notification\nConsumer]
-  PO[(order_db)]
-  PP[(payment_db)]
-  PN[(notification_db\nprocessed_events)]
+## Architecture Diagram (Assignment 3)
 
-  Client -->|POST /orders| O
-  O -->|gRPC ProcessPayment| P
-  O --> PO
-  P --> PP
-  P -->|JSON event after DB commit| RMQ
-  RMQ -->|manual ack| N
-  N --> PN
-  N -->|stdout log| L[[Console log\nemail / order / amount]]
-  N -->|nack requeue=false\nafter demo retries| DLX
-  DLX -->|DLQ monitor logs| L2[[DLQ log\nbonus demo]]
+```text
+                          REST (Gin)                    gRPC ProcessPayment
+                    ┌──────────────────┐      ┌────────────────────────────────────┐
+  Client ──────────►│   Order Service  │─────►│         Payment Service            │
+                    │    HTTP :8083    │      │   gRPC :50052 / HTTP :8084        │
+                    └────────┬─────────┘      └─────────────────┬──────────────────┘
+                             │                                  │
+                             │ write order                      │ write payment
+                             ▼                                  ▼
+                       ┌────────────┐                     ┌─────────────┐
+                       │  order_db  │                     │ payment_db  │
+                       └────────────┘                     └─────────────┘
+                                                               │
+                                                               │ publish event (persistent + confirms)
+                                                               ▼
+                         ┌────────────────────────────────────────────────────────────┐
+                         │ RabbitMQ                                                   │
+                         │ exchange: payment.events (direct, durable)                 │
+                         │ queue:    payment.completed (durable, manual ack consumer) │
+                         └───────────────────────────────┬────────────────────────────┘
+                                                         │ consume (autoAck=false)
+                                                         ▼
+                                              ┌──────────────────────────┐
+                                              │ Notification Service     │
+                                              │ - idempotency by order_id│
+                                              │ - ack after stdout log   │
+                                              └─────────────┬────────────┘
+                                                            │
+                                      ▼
+                          ┌─────────────────────────┐
+                          │ [Notification] log line │
+                          │ email/order/amount      │
+                          └─────────────────────────┘
 ```

@@ -5,31 +5,24 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 
-	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"notification-service/internal/event"
-	"notification-service/internal/repository"
 )
 
 const (
-	exchangeName    = "payment.events"
-	queueName       = "payment.completed"
-	routingKey      = "payment.completed"
-	dlxExchangeName = "payment.dlx"
-	dlqQueueName    = "payment.completed.dlq"
-	dlqRoutingKey   = "payment.completed.dlq"
+	exchangeName = "payment.events"
+	queueName    = "payment.completed"
+	routingKey   = "payment.completed"
 )
 
 type Consumer struct {
-	conn            *amqp.Connection
-	ch              *amqp.Channel
-	repo            *repository.ProcessedRepository
-	dlqDemoMu       sync.Mutex
-	dlqDemoAttempts map[string]int
+	conn         *amqp.Connection
+	ch           *amqp.Channel
+	processedMu  sync.Mutex
+	processedIDs map[string]struct{}
 }
 
 func closeAndWrap(conn *amqp.Connection, ch *amqp.Channel, format string, err error) error {
@@ -42,7 +35,7 @@ func closeAndWrap(conn *amqp.Connection, ch *amqp.Channel, format string, err er
 	return fmt.Errorf(format, err)
 }
 
-func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consumer, error) {
+func NewConsumer(amqpURL string) (*Consumer, error) {
 	conn, err := amqp.Dial(amqpURL)
 	if err != nil {
 		return nil, fmt.Errorf("rabbitmq dial: %w", err)
@@ -69,45 +62,13 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 		return nil, closeAndWrap(conn, ch, "exchange declare: %w", err)
 	}
 
-	if err := ch.ExchangeDeclare(
-		dlxExchangeName,
-		"direct",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		return nil, closeAndWrap(conn, ch, "dlx exchange declare: %w", err)
-	}
-
-	if _, err := ch.QueueDeclare(
-		dlqQueueName,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		return nil, closeAndWrap(conn, ch, "dlq queue declare: %w", err)
-	}
-
-	if err := ch.QueueBind(dlqQueueName, dlqRoutingKey, dlxExchangeName, false, nil); err != nil {
-		return nil, closeAndWrap(conn, ch, "dlq bind: %w", err)
-	}
-
-	mainQueueArgs := amqp.Table{
-		"x-dead-letter-exchange":    dlxExchangeName,
-		"x-dead-letter-routing-key": dlqRoutingKey,
-	}
-
 	if _, err := ch.QueueDeclare(
 		queueName,
 		true,
 		false,
 		false,
 		false,
-		mainQueueArgs,
+		nil,
 	); err != nil {
 		return nil, closeAndWrap(conn, ch, "queue declare: %w", err)
 	}
@@ -117,33 +78,13 @@ func NewConsumer(amqpURL string, repo *repository.ProcessedRepository) (*Consume
 	}
 
 	return &Consumer{
-		conn:            conn,
-		ch:              ch,
-		repo:            repo,
-		dlqDemoAttempts: make(map[string]int),
+		conn:         conn,
+		ch:           ch,
+		processedIDs: make(map[string]struct{}),
 	}, nil
 }
 
 func (c *Consumer) Run(ctx context.Context) error {
-	dlqDeliveries, err := c.ch.Consume(dlqQueueName, "notification-dlq-monitor", false, false, false, false, nil)
-	if err != nil {
-		return fmt.Errorf("consume dlq: %w", err)
-	}
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case d, ok := <-dlqDeliveries:
-				if !ok {
-					return
-				}
-				c.handleDLQDelivery(d)
-			}
-		}
-	}()
-
 	deliveries, err := c.ch.Consume(queueName, "", false, false, false, false, nil)
 	if err != nil {
 		return fmt.Errorf("consume: %w", err)
@@ -157,51 +98,15 @@ func (c *Consumer) Run(ctx context.Context) error {
 			if !ok {
 				return fmt.Errorf("deliveries channel closed")
 			}
-			c.handleDelivery(ctx, d)
+			c.handleDelivery(d)
 		}
 	}
 }
 
-func (c *Consumer) handleDLQDelivery(d amqp.Delivery) {
-	log.Printf("[DLQ] message moved to dead-letter queue (exchange=%s routing=%s redelivered=%v): %s",
-		d.Exchange, d.RoutingKey, d.Redelivered, string(d.Body))
-	if err := d.Ack(false); err != nil {
-		log.Printf("dlq ack: %v", err)
-	}
-}
-
-func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
+func (c *Consumer) handleDelivery(d amqp.Delivery) {
 	var ev event.PaymentCompleted
-	if err := json.Unmarshal(d.Body, &ev); err != nil {
-		log.Printf("notification: invalid JSON (drop): %v", err)
-		_ = d.Ack(false)
-		return
-	}
-
-	if strings.TrimSpace(ev.EventID) == "" {
-		log.Printf("notification: missing event_id (drop)")
-		_ = d.Ack(false)
-		return
-	}
-
-	if _, err := uuid.Parse(ev.EventID); err != nil {
-		log.Printf("notification: invalid event_id (drop): %v", err)
-		_ = d.Ack(false)
-		return
-	}
-
-	if strings.EqualFold(strings.TrimSpace(ev.CustomerEmail), event.DLQDemoEmail) {
-		c.handleDLQDemo(d, ev)
-		return
-	}
-
-	alreadyProcessed, err := c.repo.IsAlreadyProcessed(ctx, ev.EventID)
-	if err != nil {
-		log.Printf("notification: idempotency store: %v", err)
-		_ = d.Nack(false, true)
-		return
-	}
-
+	_ = json.Unmarshal(d.Body, &ev)
+	alreadyProcessed := c.isAlreadyProcessed(ev.OrderID)
 	if alreadyProcessed {
 		_ = d.Ack(false)
 		return
@@ -215,29 +120,16 @@ func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 	}
 }
 
-func (c *Consumer) handleDLQDemo(d amqp.Delivery, ev event.PaymentCompleted) {
-	c.dlqDemoMu.Lock()
-	c.dlqDemoAttempts[ev.EventID]++
-	n := c.dlqDemoAttempts[ev.EventID]
-	c.dlqDemoMu.Unlock()
+func (c *Consumer) isAlreadyProcessed(eventID string) bool {
+	c.processedMu.Lock()
+	defer c.processedMu.Unlock()
 
-	log.Printf("notification: dlq demo — simulated failure (attempt %d/3) event_id=%s", n, ev.EventID)
-
-	if n < 3 {
-		if err := d.Nack(false, true); err != nil {
-			log.Printf("notification: nack requeue: %v", err)
-		}
-		return
+	if _, exists := c.processedIDs[eventID]; exists {
+		return true
 	}
 
-	log.Printf("notification: dlq demo — max retries reached, rejecting to DLQ (event_id=%s)", ev.EventID)
-	if err := d.Nack(false, false); err != nil {
-		log.Printf("notification: nack dlq: %v", err)
-	}
-
-	c.dlqDemoMu.Lock()
-	delete(c.dlqDemoAttempts, ev.EventID)
-	c.dlqDemoMu.Unlock()
+	c.processedIDs[eventID] = struct{}{}
+	return false
 }
 
 func (c *Consumer) Close() error {

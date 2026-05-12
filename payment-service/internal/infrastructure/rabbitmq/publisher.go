@@ -13,12 +13,9 @@ import (
 )
 
 const (
-	exchangeName    = "payment.events"
-	queueName       = "payment.completed"
-	routingKey      = "payment.completed"
-	dlxExchangeName = "payment.dlx"
-	dlqQueueName    = "payment.completed.dlq"
-	dlqRoutingKey   = "payment.completed.dlq"
+	exchangeName = "payment.events"
+	queueName    = "payment.completed"
+	routingKey   = "payment.completed"
 )
 
 type Publisher struct {
@@ -59,45 +56,13 @@ func NewPublisher(amqpURL string) (*Publisher, error) {
 		return nil, closeAndWrap(conn, ch, "exchange declare: %w", err)
 	}
 
-	if err := ch.ExchangeDeclare(
-		dlxExchangeName,
-		"direct",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		return nil, closeAndWrap(conn, ch, "dlx exchange declare: %w", err)
-	}
-
-	if _, err := ch.QueueDeclare(
-		dlqQueueName,
-		true,
-		false,
-		false,
-		false,
-		nil,
-	); err != nil {
-		return nil, closeAndWrap(conn, ch, "dlq queue declare: %w", err)
-	}
-
-	if err := ch.QueueBind(dlqQueueName, dlqRoutingKey, dlxExchangeName, false, nil); err != nil {
-		return nil, closeAndWrap(conn, ch, "dlq bind: %w", err)
-	}
-
-	mainQueueArgs := amqp.Table{
-		"x-dead-letter-exchange":    dlxExchangeName,
-		"x-dead-letter-routing-key": dlqRoutingKey,
-	}
-
 	if _, err := ch.QueueDeclare(
 		queueName,
 		true,
 		false,
 		false,
 		false,
-		mainQueueArgs,
+		nil,
 	); err != nil {
 		return nil, closeAndWrap(conn, ch, "queue declare: %w", err)
 	}

@@ -2,7 +2,7 @@
 
 Repo: `https://github.com/shaminabd/assignment1_advanced_prog`
 
-Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignment 2 synchronous flow (REST → gRPC) is extended in Assignment 3 with **event-driven** notifications via **RabbitMQ** (producer in Payment, consumer in Notification), PostgreSQL for each bounded context, **manual message acknowledgements**, durable queues/messages, **idempotent consumption** by `event_id`, and **graceful shutdown** (`SIGINT`/`SIGTERM`).
+Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignment 2 synchronous flow (REST → gRPC) is extended in Assignment 3 with **event-driven** notifications via **RabbitMQ** (producer in Payment, consumer in Notification), PostgreSQL for Order/Payment bounded contexts, **manual message acknowledgements**, durable queues/messages, **idempotent consumption** by `order_id`, and **graceful shutdown** (`SIGINT`/`SIGTERM`).
 
 ## Assignment 3 — Event-driven notifications (RabbitMQ)
 
@@ -12,14 +12,13 @@ Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignm
 
 ### Reliability and ACKs
 
-- **Publisher (Payment):** after `payments` row insert succeeds and status is `Authorized`, Payment publishes a JSON event (`event_id`, `order_id`, `amount`, `customer_email`, `status`) to the durable exchange `payment.events` with routing key `payment.completed`. Messages use **persistent** delivery; the publisher enables RabbitMQ **publisher confirms** and treats the operation as failed if the broker does not acknowledge the publish.
-- **Consumer (Notification):** `Consume` uses **`autoAck=false`**. A message is **`Ack`nowledged only after** the email line is logged to stdout (and the idempotency row is committed). If DB insert/logging fails before ack, the message stays in the queue or can be **nack-requeued** for transient errors.
+- **Publisher (Payment):** after `payments` row insert succeeds and status is `Authorized`, Payment publishes a JSON event (`order_id`, `amount`, `customer_email`, `status`) to the durable exchange `payment.events` with routing key `payment.completed`. Messages use **persistent** delivery; the publisher enables RabbitMQ **publisher confirms** and treats the operation as failed if the broker does not acknowledge the publish.
+- **Consumer (Notification):** `Consume` uses **`autoAck=false`**. A message is **`Ack`nowledged only after** the email line is logged to stdout (and the idempotency check passes). If processing fails before ack, the message stays in the queue or can be **nack-requeued** for transient errors.
 
 ### Idempotency strategy
 
-- Each event carries a unique **`event_id`** (UUID) generated at publish time.
-- Notification stores processed IDs in Postgres table **`processed_events(event_id UUID PRIMARY KEY)`**.
-- On delivery, the consumer runs **`INSERT … ON CONFLICT (event_id) DO NOTHING`**. If **no row was inserted**, the message is a duplicate: **ack without logging again**. If inserted, log once then ack.
+- Notification keeps processed IDs in an in-memory map keyed by `order_id`.
+- On delivery, the consumer checks whether `order_id` already exists in that map. If yes, the message is a duplicate: **ack without logging again**. If not, it stores the ID and logs once.
 
 ### Docker Compose (full stack)
 
@@ -29,14 +28,14 @@ From the repository root:
 docker compose up --build
 ```
 
-Services: **postgres** (creates `order_db`, `payment_db`, `notification_db` and core tables via [`deploy/postgres/docker-init.sh`](deploy/postgres/docker-init.sh)), **rabbitmq** (AMQP `5672`, management UI `15672`), **payment-service**, **order-service**, **notification-service**.
+Services: **postgres** (creates `order_db`, `payment_db` and core tables via [`deploy/postgres/docker-init.sh`](deploy/postgres/docker-init.sh)), **rabbitmq** (AMQP `5672`, management UI `15672`), **payment-service**, **order-service**, **notification-service**.
 
 Environment highlights:
 
 | Variable | Service | Purpose |
 |----------|---------|---------|
 | `RABBITMQ_URL` | payment, notification | AMQP URI (compose: `amqp://guest:guest@rabbitmq:5672/`) |
-| `DATABASE_URL` | all three | Per-service database (see compose file) |
+| `DATABASE_URL` | order, payment | Per-service database (see compose file) |
 | `PAYMENT_GRPC_ADDR` | order | Payment address (`payment-service:50052` in compose) |
 
 **Fresh DB volume:** if Postgres data already exists without the new databases, run `docker compose down -v` once before `up` so `docker-init.sh` runs again.
@@ -71,31 +70,7 @@ Expected line format:
 
 - Exchange: `payment.events` (direct, durable)
 - Queue: `payment.completed` (durable), bound with routing key `payment.completed`
-- Dead-letter exchange: `payment.dlx` (direct, durable); dead-letter queue: `payment.completed.dlq` bound with routing key `payment.completed.dlq`
-- Main queue declares **`x-dead-letter-exchange`** / **`x-dead-letter-routing-key`** so that **`basic.nack` / `reject` with `requeue=false`** routes the message to the DLQ (after retries in the dlq demo).
-- JSON payload fields: `event_id`, `order_id`, `amount` (cents), `customer_email`, `status`
-
-### Bonus (+10%): Dead Letter Queue (DLQ) demo
-
-- **Topology:** Payment publisher and Notification consumer both declare the same DLX/DLQ bindings so failed demo messages are routed to **`payment.completed.dlq`**.
-- **DLQ trigger:** set `"customer_email":"dlq-demo@example.com"` on `POST /orders` (amount must stay ≤ **100000** cents so the payment is **Authorized** and an event is published).
-- **Retries:** the consumer simulates a hard failure for that email. Deliveries **1–2** use **`Nack(requeue=true)`** (retry). On delivery **3**, it **`Nack(requeue=false)`**, RabbitMQ dead-letters the message to **`payment.completed.dlq`**.
-- **Observation:** the service runs a second consumer on the DLQ only to log lines prefixed **`[DLQ]`** so you can demonstrate the move in `docker compose logs`.
-- **Important:** if RabbitMQ already had an older `payment.completed` queue **without** DLX arguments, declaration fails (`PRECONDITION_FAILED`). Reset broker state with **`docker compose down -v`** (or delete the old queue in the management UI at http://localhost:15672) before `up --build`.
-
-```bash
-curl -X POST http://localhost:8083/orders \
-  -H "Content-Type: application/json" \
-  -d '{"customer_id":"dlq-demo","item_name":"DLQ Demo","amount":5000,"customer_email":"dlq-demo@example.com"}'
-```
-
-Then watch logs:
-
-```bash
-docker compose logs -f notification-service
-```
-
-You should see three `dlq demo — simulated failure` lines (attempts 1–3), then **`dlq demo — max retries reached, rejecting to DLQ`**, then **`[DLQ] message moved to dead-letter queue …`**.
+- JSON payload fields: `order_id`, `amount` (cents), `customer_email`, `status`
 
 ## Assignment 2 — Contract-first gRPC
 
@@ -152,7 +127,7 @@ Remote-generation template for Repository B: [`rpcgen/.github/workflows/generate
 
 | Variable | Service | Purpose | Default (local) |
 |----------|---------|---------|-----------------|
-| `DATABASE_URL` | order / payment / notification | Postgres DSN | see each `internal/app/app.go` |
+| `DATABASE_URL` | order / payment | Postgres DSN | see each `internal/app/app.go` |
 | `RABBITMQ_URL` | payment, notification | RabbitMQ AMQP URL | unset payment skips publish; notification defaults to localhost guest |
 | `PORT` | order, payment | Gin HTTP port | order `8083`, payment `8084` |
 | `PAYMENT_GRPC_ADDR` | order | Dial address for Payment gRPC | `localhost:50052` |
@@ -186,8 +161,7 @@ payment-service/
 notification-service/
 ├── cmd/notification/main.go
 └── internal/
-    ├── infrastructure/rabbitmq/ - consumer, manual ack, QoS
-    └── repository/               - processed_events idempotency
+    └── infrastructure/rabbitmq/ - consumer, manual ack, QoS, in-memory idempotency
 ```
 
 ## Layers

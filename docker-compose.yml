@@ -68,11 +68,8 @@ services:
       context: .
       dockerfile: notification-service/Dockerfile
     environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/notification_db?sslmode=disable
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     depends_on:
-      postgres:
-        condition: service_healthy
       rabbitmq:
         condition: service_healthy
 

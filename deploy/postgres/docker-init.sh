@@ -4,7 +4,6 @@ set -euo pipefail
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname postgres <<-EOSQL
 CREATE DATABASE order_db;
 CREATE DATABASE payment_db;
-CREATE DATABASE notification_db;
 EOSQL
 
 psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname order_db <<-EOSQL
@@ -29,9 +28,3 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 EOSQL
 
-psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname notification_db <<-EOSQL
-CREATE TABLE IF NOT EXISTS processed_events (
-    event_id UUID PRIMARY KEY,
-    processed_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-EOSQL

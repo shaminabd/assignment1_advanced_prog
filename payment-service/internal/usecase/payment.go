@@ -58,7 +58,6 @@ func (uc *PaymentUseCase) AuthorizePayment(ctx context.Context, orderID string, 
 
 	if uc.bus != nil && payment.Status == "Authorized" {
 		ev := messaging.PaymentCompletedEvent{
-			EventID:       uuid.New().String(),
 			OrderID:       payment.OrderID,
 			Amount:        payment.Amount,
 			CustomerEmail: payment.CustomerEmail,
