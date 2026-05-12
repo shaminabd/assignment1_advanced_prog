@@ -1,16 +1,24 @@
 package app
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	apiv1 "github.com/shaminabd/ap2-contracts-go/apiv1"
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 	googlegrpc "google.golang.org/grpc"
 
+	"payment-service/internal/infrastructure/rabbitmq"
+	"payment-service/internal/messaging"
 	"payment-service/internal/repository"
 	handler "payment-service/internal/transport/http"
 	paymentgrpc "payment-service/internal/transport/grpc"
@@ -18,6 +26,9 @@ import (
 )
 
 func Run() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://postgres:postgres@localhost:5432/payment_db?sslmode=disable"
@@ -27,6 +38,7 @@ func Run() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer db.Close()
 
 	err = db.Ping()
 	if err != nil {
@@ -34,7 +46,17 @@ func Run() {
 	}
 
 	paymentRepo := repository.NewPostgresPaymentRepository(db)
-	paymentUseCase := usecase.NewPaymentUseCase(paymentRepo)
+
+	var pub messaging.PaymentCompletedPublisher
+	if rabbitURL := os.Getenv("RABBITMQ_URL"); rabbitURL != "" {
+		p, err := rabbitmq.NewPublisher(rabbitURL)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pub = p
+	}
+
+	paymentUseCase := usecase.NewPaymentUseCase(paymentRepo, pub)
 	paymentHandler := handler.NewPaymentHandler(paymentUseCase)
 
 	router := gin.Default()
@@ -63,10 +85,35 @@ func Run() {
 	go func() {
 		log.Printf("payment gRPC listening on %s", grpcListen)
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("gRPC server: %v", err)
+			log.Printf("gRPC server: %v", err)
 		}
 	}()
 
-	log.Printf("payment HTTP listening on :%s", httpPort)
-	log.Fatal(router.Run(":" + httpPort))
+	httpSrv := &http.Server{
+		Addr:    ":" + httpPort,
+		Handler: router,
+	}
+	go func() {
+		log.Printf("payment HTTP listening on :%s", httpPort)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("payment-service shutting down")
+
+	grpcServer.GracefulStop()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+
+	if pub != nil {
+		if err := pub.Close(); err != nil {
+			log.Printf("rabbitmq close: %v", err)
+		}
+	}
 }

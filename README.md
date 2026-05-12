@@ -2,7 +2,75 @@
 
 Repo: `https://github.com/shaminabd/assignment1_advanced_prog`
 
-Two microservices in Go: Order Service and Payment Service. Built with Clean Architecture, Gin (REST for external API), gRPC between services (Assignment 2), and PostgreSQL.
+Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignment 2 synchronous flow (REST → gRPC) is extended in Assignment 3 with **event-driven** notifications via **RabbitMQ** (producer in Payment, consumer in Notification), PostgreSQL for Order/Payment bounded contexts, **manual message acknowledgements**, durable queues/messages, **idempotent consumption** by `order_id`, and **graceful shutdown** (`SIGINT`/`SIGTERM`).
+
+## Assignment 3 — Event-driven notifications (RabbitMQ)
+
+### Architecture diagram (template)
+
+- Editable Mermaid source: [`docs/assignment3-architecture.md`](docs/assignment3-architecture.md) — open in [Mermaid Live Editor](https://mermaid.live) and export **PNG/SVG** for the submission PDF/report.
+
+### Reliability and ACKs
+
+- **Publisher (Payment):** after `payments` row insert succeeds and status is `Authorized`, Payment publishes a JSON event (`order_id`, `amount`, `customer_email`, `status`) to the durable exchange `payment.events` with routing key `payment.completed`. Messages use **persistent** delivery; the publisher enables RabbitMQ **publisher confirms** and treats the operation as failed if the broker does not acknowledge the publish.
+- **Consumer (Notification):** `Consume` uses **`autoAck=false`**. A message is **`Ack`nowledged only after** the email line is logged to stdout (and the idempotency check passes). If processing fails before ack, the message stays in the queue or can be **nack-requeued** for transient errors.
+
+### Idempotency strategy
+
+- Notification keeps processed IDs in an in-memory map keyed by `order_id`.
+- On delivery, the consumer checks whether `order_id` already exists in that map. If yes, the message is a duplicate: **ack without logging again**. If not, it stores the ID and logs once.
+
+### Docker Compose (full stack)
+
+From the repository root:
+
+```bash
+docker compose up --build
+```
+
+Services: **postgres** (creates `order_db`, `payment_db` and core tables via [`deploy/postgres/docker-init.sh`](deploy/postgres/docker-init.sh)), **rabbitmq** (AMQP `5672`, management UI `15672`), **payment-service**, **order-service**, **notification-service**.
+
+Environment highlights:
+
+| Variable | Service | Purpose |
+|----------|---------|---------|
+| `RABBITMQ_URL` | payment, notification | AMQP URI (compose: `amqp://guest:guest@rabbitmq:5672/`) |
+| `DATABASE_URL` | order, payment | Per-service database (see compose file) |
+| `PAYMENT_GRPC_ADDR` | order | Payment address (`payment-service:50052` in compose) |
+
+**Fresh DB volume:** if Postgres data already exists without the new databases, run `docker compose down -v` once before `up` so `docker-init.sh` runs again.
+
+**Postgres host port:** the compose file maps Postgres to **`localhost:5433`** → container `5432`, so it does not conflict with a **local PostgreSQL** often bound to **`5432`**. Services inside Docker still use `postgres:5432`. To connect from your shell with `psql`, use port **5433**.
+
+If you prefer port 5432 on the host instead, stop the other Postgres (`brew services stop postgresql@…`, quit Postgres.app, etc.) and change the mapping in [`docker-compose.yml`](docker-compose.yml) back to `"5432:5432"`.
+
+### Demo API (with email for notifications)
+
+```bash
+curl -X POST http://localhost:8083/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":"cust-1","item_name":"Laptop","amount":9999,"customer_email":"user@example.com"}'
+```
+
+Payment publishes only when the payment status is **Authorized** (business rule: amounts above **100000** cents are declined — adjust `amount` for a successful notification).
+
+Watch Notification logs:
+
+```bash
+docker compose logs -f notification-service
+```
+
+Expected line format:
+
+```text
+[Notification] Sent email to user@example.com for Order #<order_id>. Amount: $99.99
+```
+
+### Messaging layout (RabbitMQ)
+
+- Exchange: `payment.events` (direct, durable)
+- Queue: `payment.completed` (durable), bound with routing key `payment.completed`
+- JSON payload fields: `order_id`, `amount` (cents), `customer_email`, `status`
 
 ## Assignment 2 — Contract-first gRPC
 
@@ -59,8 +127,9 @@ Remote-generation template for Repository B: [`rpcgen/.github/workflows/generate
 
 | Variable | Service | Purpose | Default (local) |
 |----------|---------|---------|-----------------|
-| `DATABASE_URL` | both | Postgres DSN | see `internal/app/app.go` |
-| `PORT` | both | Gin HTTP port | order `8083`, payment `8084` |
+| `DATABASE_URL` | order / payment | Postgres DSN | see each `internal/app/app.go` |
+| `RABBITMQ_URL` | payment, notification | RabbitMQ AMQP URL | unset payment skips publish; notification defaults to localhost guest |
+| `PORT` | order, payment | Gin HTTP port | order `8083`, payment `8084` |
 | `PAYMENT_GRPC_ADDR` | order | Dial address for Payment gRPC | `localhost:50052` |
 | `PAYMENT_GRPC_LISTEN` | payment | Payment gRPC listen address | `:50052` |
 | `ORDER_GRPC_LISTEN` | order | Order gRPC listen (streaming) | `:50051` |
@@ -85,8 +154,14 @@ order-service/
 │   └── transport/grpc/          - SubscribeToOrderUpdates
 payment-service/
 ├── internal/
+│   ├── infrastructure/rabbitmq/ - publisher confirms + durable topology
+│   ├── messaging/               - event contract + publisher interface
 │   ├── transport/http/
 │   └── transport/grpc/          - ProcessPayment + logging interceptor
+notification-service/
+├── cmd/notification/main.go
+└── internal/
+    └── infrastructure/rabbitmq/ - consumer, manual ack, QoS, in-memory idempotency
 ```
 
 ## Layers
@@ -163,7 +238,7 @@ Create order:
 ```bash
 curl -X POST http://localhost:8083/orders \
   -H "Content-Type: application/json" \
-  -d '{"customer_id": "cust-1", "item_name": "Laptop", "amount": 15000}'
+  -d '{"customer_id":"cust-1","item_name":"Laptop","amount":15000,"customer_email":"user@example.com"}'
 ```
 
 Get order:

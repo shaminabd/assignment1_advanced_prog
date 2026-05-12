@@ -3,9 +3,14 @@ package app
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	apiv1 "github.com/shaminabd/ap2-contracts-go/apiv1"
 	"github.com/gin-gonic/gin"
@@ -21,6 +26,9 @@ import (
 )
 
 func Run() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		dbURL = "postgres://postgres:postgres@localhost:5432/order_db?sslmode=disable"
@@ -30,6 +38,7 @@ func Run() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer db.Close()
 
 	err = db.Ping()
 	if err != nil {
@@ -48,7 +57,7 @@ func Run() {
 	if err != nil {
 		log.Fatalf("payment gRPC client: %v", err)
 	}
-	defer paymentClient.Close()
+	defer func() { _ = paymentClient.Close() }()
 
 	orderUseCase := usecase.NewOrderUseCase(orderRepo, paymentClient)
 	orderHandler := handler.NewOrderHandler(orderUseCase)
@@ -77,10 +86,29 @@ func Run() {
 	go func() {
 		log.Printf("order gRPC listening on %s", orderGRPCListen)
 		if err := grpcServer.Serve(lis); err != nil {
-			log.Fatalf("gRPC server: %v", err)
+			log.Printf("gRPC server: %v", err)
 		}
 	}()
 
-	log.Printf("order HTTP listening on :%s", httpPort)
-	log.Fatal(router.Run(":" + httpPort))
+	httpSrv := &http.Server{
+		Addr:    ":" + httpPort,
+		Handler: router,
+	}
+	go func() {
+		log.Printf("order HTTP listening on :%s", httpPort)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("http server: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Println("order-service shutting down")
+
+	grpcServer.GracefulStop()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
 }

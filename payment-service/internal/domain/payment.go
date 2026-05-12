@@ -6,4 +6,5 @@ type Payment struct {
 	TransactionID string
 	Amount        int64
 	Status        string
+	CustomerEmail string
 }

@@ -18,9 +18,10 @@ func NewOrderHandler(useCase *usecase.OrderUseCase) *OrderHandler {
 }
 
 type createOrderRequest struct {
-	CustomerID string `json:"customer_id"`
-	ItemName   string `json:"item_name"`
-	Amount     int64  `json:"amount"`
+	CustomerID    string `json:"customer_id"`
+	ItemName      string `json:"item_name"`
+	Amount        int64  `json:"amount"`
+	CustomerEmail string `json:"customer_email"`
 }
 
 type orderResponse struct {
@@ -47,7 +48,7 @@ func (h *OrderHandler) CreateOrder(ctx *gin.Context) {
 
 	idempotencyKey := ctx.GetHeader("Idempotency-Key")
 
-	order, err := h.useCase.CreateOrder(req.CustomerID, req.ItemName, req.Amount, idempotencyKey)
+	order, err := h.useCase.CreateOrder(ctx.Request.Context(), req.CustomerID, req.ItemName, req.Amount, req.CustomerEmail, idempotencyKey)
 	if err != nil {
 		if strings.Contains(err.Error(), "not available") {
 			ctx.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
