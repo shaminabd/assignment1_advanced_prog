@@ -7,8 +7,13 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
+	redisinfra "notification-service/internal/infrastructure/redis"
 	"notification-service/internal/infrastructure/rabbitmq"
+	"notification-service/internal/provider"
 )
 
 func Run() {
@@ -20,7 +25,27 @@ func Run() {
 		amqpURL = "amqp://guest:guest@localhost:5672/"
 	}
 
-	cons, err := rabbitmq.NewConsumer(amqpURL)
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	redisClient := goredis.NewClient(&goredis.Options{Addr: redisAddr})
+	pingCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		log.Fatalf("redis ping: %v", err)
+	}
+	defer func() { _ = redisClient.Close() }()
+
+	sender, err := provider.NewEmailSenderFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	idempotency := redisinfra.NewIdempotencyStore(redisClient)
+
+	cons, err := rabbitmq.NewConsumer(amqpURL, sender, idempotency)
 	if err != nil {
 		log.Fatal(err)
 	}

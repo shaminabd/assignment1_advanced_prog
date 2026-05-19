@@ -71,7 +71,7 @@ func (h *OrderHandler) CreateOrder(ctx *gin.Context) {
 func (h *OrderHandler) GetOrder(ctx *gin.Context) {
 	id := ctx.Param("id")
 
-	order, err := h.useCase.GetOrder(id)
+	order, err := h.useCase.GetOrder(ctx.Request.Context(), id)
 	if err != nil {
 		ctx.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
 		return
@@ -90,7 +90,7 @@ func (h *OrderHandler) GetOrder(ctx *gin.Context) {
 func (h *OrderHandler) CancelOrder(ctx *gin.Context) {
 	id := ctx.Param("id")
 
-	order, err := h.useCase.CancelOrder(id)
+	order, err := h.useCase.CancelOrder(ctx.Request.Context(), id)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

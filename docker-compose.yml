@@ -27,6 +27,16 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   payment-service:
     build:
       context: .
@@ -49,11 +59,14 @@ services:
     build:
       context: .
       dockerfile: order-service/Dockerfile
+    env_file:
+      - .env
     environment:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/order_db?sslmode=disable
       PAYMENT_GRPC_ADDR: payment-service:50052
       PORT: "8083"
       ORDER_GRPC_LISTEN: ":50051"
+      REDIS_ADDR: redis:6379
     ports:
       - "8083:8083"
       - "50051:50051"
@@ -62,15 +75,25 @@ services:
         condition: service_healthy
       payment-service:
         condition: service_started
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   notification-service:
     build:
       context: .
       dockerfile: notification-service/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      REDIS_ADDR: redis:6379
     depends_on:
       rabbitmq:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:
