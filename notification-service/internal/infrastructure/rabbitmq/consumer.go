@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"sync"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -136,27 +135,15 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 	log.Printf("notification-service parallel workers=%d retry_max=%d", c.workers, c.retryMax)
 
-	sem := make(chan struct{}, c.workers)
-	var wg sync.WaitGroup
-
 	for {
 		select {
 		case <-ctx.Done():
-			wg.Wait()
 			return ctx.Err()
 		case d, ok := <-deliveries:
 			if !ok {
-				wg.Wait()
 				return fmt.Errorf("deliveries channel closed")
 			}
-
-			wg.Add(1)
-			go func(d amqp.Delivery) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-				c.handleDelivery(ctx, d)
-			}(d)
+			go c.handleDelivery(ctx, d)
 		}
 	}
 }
