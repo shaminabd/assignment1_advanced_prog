@@ -15,9 +15,11 @@ import (
 	apiv1 "github.com/shaminabd/ap2-contracts-go/apiv1"
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
+	goredis "github.com/redis/go-redis/v9"
 	googlegrpc "google.golang.org/grpc"
 
 	"order-service/internal/client"
+	redisinfra "order-service/internal/infrastructure/redis"
 	"order-service/internal/repository"
 	"order-service/internal/streaming"
 	handler "order-service/internal/transport/http"
@@ -59,10 +61,30 @@ func Run() {
 	}
 	defer func() { _ = paymentClient.Close() }()
 
-	orderUseCase := usecase.NewOrderUseCase(orderRepo, paymentClient)
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisAddr == "" {
+		redisAddr = "localhost:6379"
+	}
+
+	cacheTTL := 5 * time.Minute
+	if raw := os.Getenv("ORDER_CACHE_TTL"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			cacheTTL = parsed
+		}
+	}
+
+	redisClient := goredis.NewClient(&goredis.Options{Addr: redisAddr})
+	if err := redisClient.Ping(context.Background()).Err(); err != nil {
+		log.Fatalf("redis ping: %v", err)
+	}
+	defer func() { _ = redisClient.Close() }()
+
+	orderCache := redisinfra.NewOrderCache(redisClient, cacheTTL)
+	orderUseCase := usecase.NewOrderUseCase(orderRepo, paymentClient, orderCache)
 	orderHandler := handler.NewOrderHandler(orderUseCase)
 
 	router := gin.Default()
+	router.Use(handler.RateLimitMiddleware(redisClient))
 	orderHandler.RegisterRoutes(router)
 
 	httpPort := os.Getenv("PORT")

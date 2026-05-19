@@ -2,7 +2,77 @@
 
 Repo: `https://github.com/shaminabd/assignment1_advanced_prog`
 
-Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignment 2 synchronous flow (REST → gRPC) is extended in Assignment 3 with **event-driven** notifications via **RabbitMQ** (producer in Payment, consumer in Notification), PostgreSQL for Order/Payment bounded contexts, **manual message acknowledgements**, durable queues/messages, **idempotent consumption** by `order_id`, and **graceful shutdown** (`SIGINT`/`SIGTERM`).
+Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignment 2 synchronous flow (REST → gRPC) is extended in Assignment 3 with **event-driven** notifications via **RabbitMQ** (producer in Payment, consumer in Notification), PostgreSQL for Order/Payment bounded contexts, **manual message acknowledgements**, durable queues/messages, **idempotent consumption** by `order_id`, and **graceful shutdown** (`SIGINT`/`SIGTERM`). Assignment 4 adds **Redis cache-aside** for order reads, a **background notification worker** with provider adapters and retries, and a **Redis-backed rate limiter** on Order HTTP.
+
+## Assignment 4 — Caching, worker, external provider
+
+### Architecture diagram
+
+- Editable source: [`docs/assignment4-architecture.md`](docs/assignment4-architecture.md)
+
+### Cache invalidation (Order Service)
+
+- `GET /orders/:id` uses **cache-aside**: Redis key `order:{id}` with TTL from `ORDER_CACHE_TTL` (default **5m**).
+- On cache miss the service reads Postgres and stores the order in Redis.
+- After every successful `UpdateStatus` (`Paid`, `Failed`, `Cancelled`) the use case deletes `order:{id}` so the next read cannot return stale status.
+- If Redis is unavailable on read, the handler falls back to Postgres.
+
+### Notification worker, retries, idempotency
+
+- Notification consumes `payment.completed` asynchronously; HTTP order creation does not wait for email delivery.
+- `PROVIDER_MODE=SIMULATED` (default) uses a mock provider with latency and random transient failures; `PROVIDER_MODE=REAL` uses SMTP env settings.
+- Before send, Redis key `notification:sent:{order_id}` is checked; duplicates are acked without resending.
+- On provider error the worker retries with exponential backoff (`NOTIFICATION_RETRY_BASE_DELAY` × 2^attempt, default **2s / 4s / 8s / …**, `NOTIFICATION_RETRY_MAX=5`).
+- Multiple messages are processed **in parallel** (`NOTIFICATION_WORKERS`, default `5`); Redis `SETNX` prevents duplicate sends for the same `order_id`.
+- The message is **acked only after** a successful send and Redis `MarkSent`; exhausted retries use `Nack(requeue=false)`.
+
+### Docker Compose (full stack + Redis)
+
+From the repository root:
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Services: **postgres**, **rabbitmq**, **redis**, **payment-service**, **order-service**, **notification-service**.
+
+| Variable | Service | Purpose |
+|----------|---------|---------|
+| `REDIS_ADDR` | order, notification | Redis address (`redis:6379` in compose) |
+| `ORDER_CACHE_TTL` | order | Cache TTL for `GET /orders/:id` |
+| `RATE_LIMIT_REQUESTS` | order | Max HTTP requests per window (default `10`) |
+| `RATE_LIMIT_WINDOW` | order | Rate limit window (default `1m`) |
+| `PROVIDER_MODE` | notification | `SIMULATED` or `REAL` |
+| `SIMULATED_FAIL_RATE` | notification | Random failure probability for SIMULATED (default `0.8`) |
+| `NOTIFICATION_RETRY_MAX` | notification | Max send attempts (default `5`) |
+| `NOTIFICATION_RETRY_BASE_DELAY` | notification | Base backoff delay |
+| `NOTIFICATION_WORKERS` | notification | Parallel consumer workers (default `5`) |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM` | notification | SMTP settings for `REAL` |
+
+### Demo API
+
+```bash
+curl -X POST http://localhost:8083/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id":"cust-1","item_name":"Laptop","amount":9999,"customer_email":"user@example.com"}'
+
+curl http://localhost:8083/orders/{order_id}
+```
+
+Watch notification logs:
+
+```bash
+docker compose logs -f notification-service
+```
+
+Rate limit check (11th request within a minute returns **429**):
+
+```bash
+for i in $(seq 1 11); do curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8083/orders/{order_id}; done
+```
+
+**Parallel notification demo:** Postman Collection Runner runs iterations **one after another**, so RabbitMQ often gets one message at a time. To see several `[Consumer] [goroutine] Processing event ...` lines with the same timestamp, create orders **in parallel**:
 
 ## Assignment 3 — Event-driven notifications (RabbitMQ)
 
@@ -17,8 +87,8 @@ Three microservices in Go: **Order**, **Payment**, and **Notification**. Assignm
 
 ### Idempotency strategy
 
-- Notification keeps processed IDs in an in-memory map keyed by `order_id`.
-- On delivery, the consumer checks whether `order_id` already exists in that map. If yes, the message is a duplicate: **ack without logging again**. If not, it stores the ID and logs once.
+- Notification stores processed `order_id` values in **Redis** (`notification:sent:{order_id}`).
+- On delivery, if the key exists the consumer **acks without sending again**; otherwise it sends with retries and marks the key after success.
 
 ### Docker Compose (full stack)
 
@@ -28,7 +98,7 @@ From the repository root:
 docker compose up --build
 ```
 
-Services: **postgres** (creates `order_db`, `payment_db` and core tables via [`deploy/postgres/docker-init.sh`](deploy/postgres/docker-init.sh)), **rabbitmq** (AMQP `5672`, management UI `15672`), **payment-service**, **order-service**, **notification-service**.
+Services: **postgres** (creates `order_db`, `payment_db` and core tables via [`deploy/postgres/docker-init.sh`](deploy/postgres/docker-init.sh)), **rabbitmq** (AMQP `5672`, management UI `15672`), **redis** (`6379`), **payment-service**, **order-service**, **notification-service**.
 
 Environment highlights:
 
@@ -149,8 +219,9 @@ order-service/
 ├── internal/
 │   ├── app/app.go
 │   ├── client/payment.go        - gRPC client → Payment
+│   ├── infrastructure/redis/    - order cache-aside
 │   ├── streaming/hub.go         - order status fan-out
-│   ├── transport/http/          - Gin
+│   ├── transport/http/          - Gin + rate limit middleware
 │   └── transport/grpc/          - SubscribeToOrderUpdates
 payment-service/
 ├── internal/
@@ -161,7 +232,9 @@ payment-service/
 notification-service/
 ├── cmd/notification/main.go
 └── internal/
-    └── infrastructure/rabbitmq/ - consumer, manual ack, QoS, in-memory idempotency
+    ├── provider/                - EmailSender adapters (SIMULATED / SMTP)
+    ├── infrastructure/redis/    - idempotency store
+    └── infrastructure/rabbitmq/ - consumer, retries, manual ack
 ```
 
 ## Layers
@@ -266,5 +339,7 @@ curl http://localhost:8084/payments/{order_id}
 - Defense: clone from LMS, run services + subscriber, answer questions.
 
 ## Bonus (+10%)
+
+Order Service HTTP **rate limiter** middleware uses Redis counters per client IP (`RATE_LIMIT_REQUESTS` per `RATE_LIMIT_WINDOW`) and returns **429 Too Many Requests** when exceeded: [`order-service/internal/transport/http/ratelimit.go`](order-service/internal/transport/http/ratelimit.go).
 
 Payment gRPC **unary interceptor** logs each method and duration: [`payment-service/internal/transport/grpc/logging_interceptor.go`](payment-service/internal/transport/grpc/logging_interceptor.go).

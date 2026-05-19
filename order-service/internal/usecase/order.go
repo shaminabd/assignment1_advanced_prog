@@ -18,6 +18,12 @@ type OrderRepository interface {
 	GetRevenueByCustomerID(customerID string) (int64, int, error)
 }
 
+type OrderCache interface {
+	Get(ctx context.Context, id string) (*domain.Order, bool, error)
+	Set(ctx context.Context, order domain.Order) error
+	Delete(ctx context.Context, id string) error
+}
+
 type PaymentClient interface {
 	AuthorizePayment(ctx context.Context, orderID string, amount int64, customerEmail string) (string, string, error)
 }
@@ -25,13 +31,22 @@ type PaymentClient interface {
 type OrderUseCase struct {
 	orderRepo     OrderRepository
 	paymentClient PaymentClient
+	orderCache    OrderCache
 }
 
-func NewOrderUseCase(orderRepo OrderRepository, paymentClient PaymentClient) *OrderUseCase {
+func NewOrderUseCase(orderRepo OrderRepository, paymentClient PaymentClient, orderCache OrderCache) *OrderUseCase {
 	return &OrderUseCase{
 		orderRepo:     orderRepo,
 		paymentClient: paymentClient,
+		orderCache:    orderCache,
 	}
+}
+
+func (uc *OrderUseCase) invalidateOrder(ctx context.Context, id string) {
+	if uc.orderCache == nil {
+		return
+	}
+	_ = uc.orderCache.Delete(ctx, id)
 }
 
 func (uc *OrderUseCase) GetRevenueByCustomerID(customerID string) (int64, int, error) {
@@ -68,26 +83,45 @@ func (uc *OrderUseCase) CreateOrder(ctx context.Context, customerID string, item
 	status, _, err := uc.paymentClient.AuthorizePayment(ctx, order.ID, order.Amount, customerEmail)
 	if err != nil {
 		uc.orderRepo.UpdateStatus(order.ID, "Failed")
+		uc.invalidateOrder(ctx, order.ID)
 		order.Status = "Failed"
 		return &order, errors.New("payment service is not available")
 	}
 
 	if status == "Authorized" {
 		uc.orderRepo.UpdateStatus(order.ID, "Paid")
+		uc.invalidateOrder(ctx, order.ID)
 		order.Status = "Paid"
 	} else {
 		uc.orderRepo.UpdateStatus(order.ID, "Failed")
+		uc.invalidateOrder(ctx, order.ID)
 		order.Status = "Failed"
 	}
 
 	return &order, nil
 }
 
-func (uc *OrderUseCase) GetOrder(id string) (*domain.Order, error) {
-	return uc.orderRepo.GetByID(id)
+func (uc *OrderUseCase) GetOrder(ctx context.Context, id string) (*domain.Order, error) {
+	if uc.orderCache != nil {
+		cached, ok, err := uc.orderCache.Get(ctx, id)
+		if err == nil && ok {
+			return cached, nil
+		}
+	}
+
+	order, err := uc.orderRepo.GetByID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	if uc.orderCache != nil {
+		_ = uc.orderCache.Set(ctx, *order)
+	}
+
+	return order, nil
 }
 
-func (uc *OrderUseCase) CancelOrder(id string) (*domain.Order, error) {
+func (uc *OrderUseCase) CancelOrder(ctx context.Context, id string) (*domain.Order, error) {
 	order, err := uc.orderRepo.GetByID(id)
 	if err != nil {
 		return nil, errors.New("order not found")
@@ -105,6 +139,7 @@ func (uc *OrderUseCase) CancelOrder(id string) (*domain.Order, error) {
 	if err != nil {
 		return nil, err
 	}
+	uc.invalidateOrder(ctx, id)
 
 	order.Status = "Cancelled"
 	return order, nil

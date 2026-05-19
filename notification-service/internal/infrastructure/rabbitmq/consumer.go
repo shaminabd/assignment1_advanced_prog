@@ -5,11 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"sync"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/google/uuid"
 
 	"notification-service/internal/event"
+	"notification-service/internal/infrastructure/redis"
+	"notification-service/internal/provider"
 )
 
 const (
@@ -19,10 +25,13 @@ const (
 )
 
 type Consumer struct {
-	conn         *amqp.Connection
-	ch           *amqp.Channel
-	processedMu  sync.Mutex
-	processedIDs map[string]struct{}
+	conn        *amqp.Connection
+	ch          *amqp.Channel
+	sender      provider.EmailSender
+	idempotency *redis.IdempotencyStore
+	retryMax    int
+	retryBase   time.Duration
+	workers     int
 }
 
 func closeAndWrap(conn *amqp.Connection, ch *amqp.Channel, format string, err error) error {
@@ -35,7 +44,7 @@ func closeAndWrap(conn *amqp.Connection, ch *amqp.Channel, format string, err er
 	return fmt.Errorf(format, err)
 }
 
-func NewConsumer(amqpURL string) (*Consumer, error) {
+func NewConsumer(amqpURL string, sender provider.EmailSender, idempotency *redis.IdempotencyStore) (*Consumer, error) {
 	conn, err := amqp.Dial(amqpURL)
 	if err != nil {
 		return nil, fmt.Errorf("rabbitmq dial: %w", err)
@@ -46,7 +55,8 @@ func NewConsumer(amqpURL string) (*Consumer, error) {
 		return nil, closeAndWrap(conn, nil, "rabbitmq channel: %w", err)
 	}
 
-	if err := ch.Qos(1, 0, false); err != nil {
+	workers := workersFromEnv()
+	if err := ch.Qos(workers, 0, false); err != nil {
 		return nil, closeAndWrap(conn, ch, "qos: %w", err)
 	}
 
@@ -78,10 +88,44 @@ func NewConsumer(amqpURL string) (*Consumer, error) {
 	}
 
 	return &Consumer{
-		conn:         conn,
-		ch:           ch,
-		processedIDs: make(map[string]struct{}),
+		conn:        conn,
+		ch:          ch,
+		sender:      sender,
+		idempotency: idempotency,
+		retryMax:    retryMaxFromEnv(),
+		retryBase:   retryBaseFromEnv(),
+		workers:     workers,
 	}, nil
+}
+
+func workersFromEnv() int {
+	n := 5
+	if raw := os.Getenv("NOTIFICATION_WORKERS"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			n = parsed
+		}
+	}
+	return n
+}
+
+func retryMaxFromEnv() int {
+	max := 5
+	if raw := os.Getenv("NOTIFICATION_RETRY_MAX"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			max = parsed
+		}
+	}
+	return max
+}
+
+func retryBaseFromEnv() time.Duration {
+	base := 2 * time.Second
+	if raw := os.Getenv("NOTIFICATION_RETRY_BASE_DELAY"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			base = parsed
+		}
+	}
+	return base
 }
 
 func (c *Consumer) Run(ctx context.Context) error {
@@ -90,46 +134,104 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return fmt.Errorf("consume: %w", err)
 	}
 
+	log.Printf("notification-service parallel workers=%d retry_max=%d", c.workers, c.retryMax)
+
+	sem := make(chan struct{}, c.workers)
+	var wg sync.WaitGroup
+
 	for {
 		select {
 		case <-ctx.Done():
+			wg.Wait()
 			return ctx.Err()
 		case d, ok := <-deliveries:
 			if !ok {
+				wg.Wait()
 				return fmt.Errorf("deliveries channel closed")
 			}
-			c.handleDelivery(d)
+
+			wg.Add(1)
+			go func(d amqp.Delivery) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				c.handleDelivery(ctx, d)
+			}(d)
 		}
 	}
 }
 
-func (c *Consumer) handleDelivery(d amqp.Delivery) {
+func (c *Consumer) handleDelivery(ctx context.Context, d amqp.Delivery) {
 	var ev event.PaymentCompleted
-	_ = json.Unmarshal(d.Body, &ev)
-	alreadyProcessed := c.isAlreadyProcessed(ev.OrderID)
-	if alreadyProcessed {
+	if err := json.Unmarshal(d.Body, &ev); err != nil {
+		log.Printf("notification: invalid payload: %v", err)
+		_ = d.Nack(false, false)
+		return
+	}
+
+	eventID := d.MessageId
+	if eventID == "" {
+		eventID = uuid.New().String()
+	}
+	log.Printf("[Consumer] [goroutine] Processing event %s for order %s", eventID, ev.OrderID)
+
+	claimed, alreadySent, err := c.idempotency.TryClaim(ctx, ev.OrderID)
+	if err != nil {
+		log.Printf("notification: idempotency claim: %v", err)
+		_ = d.Nack(false, true)
+		return
+	}
+	if alreadySent {
 		_ = d.Ack(false)
+		return
+	}
+	if !claimed {
+		_ = d.Nack(false, true)
 		return
 	}
 
 	amountStr := fmt.Sprintf("$%.2f", float64(ev.Amount)/100)
-	log.Printf("[Notification] Sent email to %s for Order #%s. Amount: %s", ev.CustomerEmail, ev.OrderID, amountStr)
+	subject := ev.OrderID
+	body := amountStr
+
+	var sendErr error
+	for attempt := 0; attempt < c.retryMax; attempt++ {
+		if attempt > 0 {
+			delay := c.retryBase * time.Duration(1<<(attempt-1))
+			log.Printf("notification: retry %d/%d for order %s in %s", attempt, c.retryMax-1, ev.OrderID, delay)
+			select {
+			case <-ctx.Done():
+				_ = c.idempotency.Release(ctx, ev.OrderID)
+				_ = d.Nack(false, true)
+				return
+			case <-time.After(delay):
+			}
+		}
+
+		sendErr = c.sender.Send(ctx, ev.CustomerEmail, subject, body)
+		if sendErr == nil {
+			break
+		}
+		log.Printf("notification: send failed for order %s (attempt %d): %v", ev.OrderID, attempt+1, sendErr)
+	}
+
+	if sendErr != nil {
+		log.Printf("notification: exhausted retries for order %s: %v", ev.OrderID, sendErr)
+		_ = c.idempotency.Release(ctx, ev.OrderID)
+		_ = d.Nack(false, false)
+		return
+	}
+
+	if err := c.idempotency.MarkSent(ctx, ev.OrderID); err != nil {
+		log.Printf("notification: mark sent: %v", err)
+		_ = c.idempotency.Release(ctx, ev.OrderID)
+		_ = d.Nack(false, true)
+		return
+	}
 
 	if err := d.Ack(false); err != nil {
 		log.Printf("notification: ack: %v", err)
 	}
-}
-
-func (c *Consumer) isAlreadyProcessed(eventID string) bool {
-	c.processedMu.Lock()
-	defer c.processedMu.Unlock()
-
-	if _, exists := c.processedIDs[eventID]; exists {
-		return true
-	}
-
-	c.processedIDs[eventID] = struct{}{}
-	return false
 }
 
 func (c *Consumer) Close() error {
